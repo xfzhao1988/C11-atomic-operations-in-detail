@@ -1,0 +1,11 @@
+{
+    "files.associations": {
+        "stdio.h": "c",
+        "inet.h": "c",
+        "dbg.h": "c",
+        "random": "c",
+        "stdint.h": "c",
+        "stdatomic.h": "c",
+        "stdalign.h": "c"
+    }
+}
