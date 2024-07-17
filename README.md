@@ -225,7 +225,7 @@ _Bool atomic_flag_test_and_set_explicit(volatile atomic_flag *object, memory_ord
 最后再谈谈原子标志的清除操作函数接口。它也有explicit版本，其原型为：
 ```c
 void atomic_flag_clear(volatile atomic_flag *object);
-         
+
 void atomic_flag_clear_explicit(volatile atomic_flag *object, memory_order order);
 ```
 该操作函数的语义为：对指定的原子标志对象 **object** 进行清零操作。如果我们将原子标志对象用作“锁”的话，那么执行此操作就相当于释放锁。
@@ -241,6 +241,61 @@ void atomic_flag_clear_explicit(volatile atomic_flag *object, memory_order order
 
 #include <pthread.h>
 
+/**
+asm("pause") 的原理涉及到现代 x86 和 x86_64 处理器的内部工作机制，特别是在处理多线程和多核心系统中
+的忙等待循环时。pause 指令本质上是一种提示（hint），告诉处理器当前线程正在忙等待，使其在处理这类循环时
+能够更加高效地工作。以下是其具体原理：
+
+1. 减少功耗
+pause 指令让处理器进入一种低功耗状态。在忙等待循环中，如果没有 pause 指令，处理器会不停地执行无效的操作，
+消耗大量的功耗。通过使用 pause 指令，处理器可以短暂地休眠，减少不必要的功耗。
+
+2. 改善性能
+在多核处理器上，当多个线程忙等待同一个共享资源时，使用 pause 指令可以减少缓存一致性流量。因为在多处理器系统中，
+各个处理器核需要保持缓存的一致性，这可能会导致大量的缓存一致性消息。如果在忙等待循环中插入 pause 指令，
+这些消息的频率会降低，从而改善整体系统性能。
+
+3. 避免资源冲突
+pause 指令可以降低内存子系统的压力。当一个处理器在忙等待时，频繁地访问相同的内存地址会导致内存子系统的高负载。
+通过使用 pause 指令，可以减少对内存的访问频率，降低内存子系统的压力。
+
+4. 防止管线乱序执行
+现代处理器采用乱序执行来提高指令吞吐量。但在忙等待循环中，乱序执行可能会导致不必要的指令执行。pause 指令是一种
+序列化指令，它会在当前指令之前的所有指令完成后才执行，并且在它之后的指令会在它执行完之后再执行。这可以确保忙等待
+循环中的指令按顺序执行，避免无效的乱序执行。
+
+5. 提高超线程的效率
+在支持超线程技术的处理器上，一个物理核心可以有两个逻辑线程。当一个逻辑线程在忙等待时，pause 指令可以使处理器
+更好地调度另一个逻辑线程，提高处理器资源的利用率。
+
+实际示例
+
+#include <iostream>
+#include <thread>
+#include <atomic>
+
+std::atomic<bool> ready(false);
+
+void worker() {
+    // 等待 ready 变为 true
+    while (!ready.load(std::memory_order_acquire)) {
+        asm("pause");
+    }
+    std::cout << "Worker thread proceeding after ready is set to true." << std::endl;
+}
+
+int main() {
+    std::thread t(worker);
+
+    // 模拟一些工作，然后设置 ready 为 true
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    ready.store(true, std::memory_order_release);
+
+    t.join();
+    return 0;
+}
+在这个例子中，asm("pause") 指令使处理器在忙等待循环中更加高效，减少了功耗，提高了性能，并优化了处理器资源的使用。
+*/
 // 为了避免CPU直接死等，
 // 这里定义了常用处理器架构的释放当前线程的暗示指令操作
 #if defined(__x86__) || defined(__x86_64__) || defined(__i386__)
@@ -262,10 +317,10 @@ void atomic_flag_clear_explicit(volatile atomic_flag *object, memory_order order
 struct MyAtomicFloat
 {
     volatile atomic_flag atomFlag;
-    
+
     // 出于性能上考虑，我们应该尽量让原子对象与普通对象之间留有些空间
     int padding;
-    
+
     // 如果当前编译器能支持C11的alignas的话，
     // 那么我们也能使用alignas来做字节对齐
     alignas(16) float value;
@@ -284,10 +339,10 @@ static void AtomicValueInc(int nLoops)
         // 先进行上锁
         while(atomic_flag_test_and_set(&sAtomicFLoatObject.atomFlag))
             CPU_PAUSE();
-        
+
         // 对共享数据做递增操作
         sAtomicFLoatObject.value += 1.0f;
-        
+
         // 最后释放锁
         atomic_flag_clear(&sAtomicFLoatObject.atomFlag);
     }
@@ -298,7 +353,7 @@ static void* ThreadProc(void *args)
 {
     // 在用户线程中执行10000次
     AtomicValueInc(10000);
-    
+
     return NULL;
 }
 
@@ -306,11 +361,11 @@ int main(int argc, const char * argv[])
 {
     printf("The size is: %zu, `value` offset is: %zu\n",
            sizeof(sAtomicFLoatObject), offsetof(struct MyAtomicFloat, value));
-    
+
     // 对原子浮点数对象先进行初始化
     sAtomicFLoatObject.atomFlag = (atomic_flag)ATOMIC_FLAG_INIT;
     sAtomicFLoatObject.value = 0.0f;
-    
+
     pthread_t threadID;
     // 创建线程并调度执行
     if(pthread_create(&threadID, NULL, ThreadProc, NULL) != 0)
@@ -318,13 +373,13 @@ int main(int argc, const char * argv[])
         puts("Failed to create a thread!");
         return 0;
     }
-    
+
     // 在主线程中也执行10000次
     AtomicValueInc(10000);
-    
+
     // 等待线程执行完毕
     pthread_join(threadID, NULL);
-    
+
     // 输出最终结果
     printf("The final result is: %f\n", sAtomicFLoatObject.value);
 }
@@ -360,10 +415,10 @@ int main(int argc, const char * argv[])
 {
     // 将intAtom原子对象初始化为10
     volatile atomic_int intAtom = ATOMIC_VAR_INIT(10);
-    
+
     // 将boolAtom原子对象初始化为true
     volatile atomic_bool boolAtom = ATOMIC_VAR_INIT(true);
-    
+
     // 将charAtom原子对象初始化为'c'
     volatile atomic_char charAtom = ATOMIC_VAR_INIT('c');
 }
@@ -380,13 +435,13 @@ int main(int argc, const char * argv[])
     volatile atomic_int intAtom;
     volatile atomic_bool boolAtom;
     volatile atomic_char charAtom;
-    
+
     // 将intAtom原子对象初始化为10
     atomic_init(&intAtom, 10);
-    
+
     // 将boolAtom原子对象初始化为false
     atomic_init(&boolAtom, false);
-    
+
     // 将charAtom原子对象初始化为'c'
     atomic_init(&charAtom, 'c');
 }
@@ -401,7 +456,7 @@ int main(int argc, const char * argv[])
 整数原子类型的存储与加载均有两种模式，一种是默认存储器次序模式，还有一种则是显式指定存储器次序的模式。我们先列出整数原子类型加载操作。
 
 ```c
-C atomic_load(volatile A *object); 
+C atomic_load(volatile A *object);
 
 C atomic_load_explicit(volatile A *object, memory_order order);
 ```
@@ -418,16 +473,16 @@ int main(int argc, const char * argv[])
     volatile atomic_int intAtom = ATOMIC_VAR_INIT(10);
     volatile atomic_bool boolAtom = ATOMIC_VAR_INIT(true);
     volatile atomic_char charAtom = ATOMIC_VAR_INIT('a');
-    
+
     // 加载intAtom原子对象的值
     int i = atomic_load(&intAtom);
-    
+
     // 加载boolAtom原子对象的值
     bool b = atomic_load(&boolAtom);
-    
+
     // 加载charAtom原子对象的值
     char c = atomic_load(&charAtom);
-    
+
     printf("i = %d, b = %d, c = %c\n", i, b, c);
 }
 ```
@@ -435,7 +490,7 @@ int main(int argc, const char * argv[])
 整数原子类型的存储操作也有两种版本，一个是默认存储器次序的，另一个是显式指定存储器次序的。
 
 ```c
-void atomic_store(volatile A *object, C desired); 
+void atomic_store(volatile A *object, C desired);
 
 void atomic_store_explicit(volatile A *object, C desired, memory_order order);
 ```
@@ -452,25 +507,25 @@ int main(int argc, const char * argv[])
     volatile atomic_int intAtom = ATOMIC_VAR_INIT(0);
     volatile atomic_bool boolAtom = ATOMIC_VAR_INIT(false);
     volatile atomic_char charAtom = ATOMIC_VAR_INIT('\0');
-    
+
     // 用-100来存储intAtom原子对象的值
     atomic_store(&intAtom, -100);
-    
+
     // 用true来存储boolAtom原子对象的值
     atomic_store(&boolAtom, true);
-    
+
     // 用'c'来存储charAtom的值
     atomic_store(&charAtom, 'c');
-    
+
     // 加载intAtom原子对象的值
     int i = atomic_load(&intAtom);
-    
+
     // 加载boolAtom原子对象的值
     bool b = atomic_load(&boolAtom);
-    
+
     // 加载charAtom原子对象的值
     char c = atomic_load(&charAtom);
-    
+
     printf("i = %d, b = %d, c = %c\n", i, b, c);
 }
 ```
@@ -496,15 +551,15 @@ C atomic_exchange_explicit(volatile A *object, C desired, memory_order order);
 int main(int argc, const char * argv[])
 {
     volatile atomic_int atom = ATOMIC_VAR_INIT(0);
-    
+
     // 使用atomic_exchange操作将1写入到atom原子对象，
     // 然后返回atom原先的值——0
     int value = atomic_exchange(&atom, 1);
     printf("value = %d, atom = %d\n", value, atomic_load(&atom));
-    
+
     // 我们可以再来一遍
     value = atomic_exchange(&atom, 2);
-    
+
     // 这里输出：value = 1, atom = 2
     printf("value = %d, atom = %d\n", value, atomic_load(&atom));
 }
@@ -522,7 +577,7 @@ C11标准中的整数原子类型对象的比较与交换操作其实就对应�
 _Bool atomic_compare_exchange_strong(volatile A *object, C *expected, C desired);
 
 _Bool atomic_compare_exchange_strong_explicit(volatile A *object, C *expected, C desired,
-memory_order success, memory_order failure); 
+memory_order success, memory_order failure);
 
 _Bool atomic_compare_exchange_weak(volatile A *object, C *expected, C desired);
 
@@ -543,27 +598,27 @@ strong版本与CAS的语义完全一致，而weak版本则有些区别。weak版
 int main(int argc, const char * argv[])
 {
     volatile atomic_int atom = ATOMIC_VAR_INIT(0);
-    
+
     // 我们先从atom原子对象加载其值
     int expected = atomic_load(&atom);
-    
+
     // 我们就对atom原子对象操作一次，因此这里用strong版本。
     // 如果比较成功，就将1存储到atom原子对象中
     bool equal = atomic_compare_exchange_strong(&atom, &expected, 1);
-    
+
     // 这里输出：Is equal? 1, atom value is: 1
     printf("Is equal? %d, atom value is: %d\n", equal, atomic_load(&atom));
-    
+
     // 我们再次加载atom的值
     expected = atomic_load(&atom);
-    
+
     // 我们对expected进行了修改
     expected += 10;
-    
+
     // 由于这次比较，expected所存储的值与atom的值不相等，
     // 因此将atom的值重新存放到expected中，且返回false。
     equal = atomic_compare_exchange_strong(&atom, &expected, -1);
-    
+
     // Is equal? 0, expected value is: 1
     printf("Is equal? %d, expected value is: %d\n", equal, expected);
 }
@@ -592,7 +647,7 @@ static void AtomicValueInc(int nLoops)
         // 先读取sAtomicFLoatObject的当前值
         int orgValue = atomic_load(&sAtomicFLoatObject);
         float dstValue;
-        
+
         do
         {
             // 我们将orgValue所表示的单精度浮点数萃取出来，
@@ -610,7 +665,7 @@ static void* ThreadProc(void *args)
 {
     // 在用户线程中执行10000次
     AtomicValueInc(10000);
-    
+
     return NULL;
 }
 
@@ -621,7 +676,7 @@ int main(int argc, const char * argv[])
     // 而显式地用单精度浮点数所表示的IEEE整数来为
     // sAtomicFLoatObject进行初始化
     atomic_init(&sAtomicFLoatObject, *(int*)&zero);
-    
+
     pthread_t threadID;
     // 创建线程并调度执行
     if(pthread_create(&threadID, NULL, ThreadProc, NULL) != 0)
@@ -629,23 +684,23 @@ int main(int argc, const char * argv[])
         puts("Failed to create a thread!");
         return 0;
     }
-    
+
     // 在主线程中执行10000次
     AtomicValueInc(10000);
-    
+
     // 等待线程执行完毕
     pthread_join(threadID, NULL);
-    
+
     // 输出最终结果
     const int result = atomic_load(&sAtomicFLoatObject);
     printf("The final result is: %f\n", *(float*)&result);
-    
+
     // 由于计算精度关系，最终结果可能不会正好为2000.0f，
     // 因此，我们可以在写一个简单的算法进行验证结果的正确性！
     float sum = 0.0f;
     for(int i = 0; i < 20000; i++)
         sum += 0.1f;
-    
+
     // 由于算法相同，在没经过任何优化的情况下，
     // 两者在IEEE二进制表达上应该是完全一致的！
     if(sum == *(float*)&result)
@@ -664,7 +719,7 @@ C11标准中提供了针对整数原子类型对象的基本算术逻辑操作�
 原子获取与修改操作有如下这些品种：加法（add），减法（sub），按位与（and），按位或（or），按位异或（xor）。每种原子获取与修改操作都有两版本，一个版本为 默认存储器次序，另一个版本为显式指定存储器次序。其函数原型如下所示：
 
 ```c
-C atomic_fetch_<key>(volatile A *object, M operand); 
+C atomic_fetch_<key>(volatile A *object, M operand);
 
 C atomic_fetch_<key>_explicit(volatile A *object, M operand, memory_order order);
 ```
@@ -680,25 +735,25 @@ C atomic_fetch_<key>_explicit(volatile A *object, M operand, memory_order order)
 int main(int argc, const char * argv[])
 {
     volatile atomic_int atom = ATOMIC_VAR_INIT(10);
-    
+
     // 这里对原子对象atom做原子加法操作，
     // 将它与5相加，再将结果存入该原子对象
     int value = atomic_fetch_add(&atom, 5);
-    
+
     // 输出：value = 10, atom = 15
     printf("value = %d, atom = %d\n", value, atomic_load(&atom));
-    
+
     // 这里对原子对象atom做原子减法操作，
     // 将它与8相减，再将结果存入该原子对象
     value = atomic_fetch_sub(&atom, 8);
-    
+
     // 输出：value = 15, atom = 7
     printf("value = %d, atom = %d\n", value, atomic_load(&atom));
-    
+
     // 这里对原子对象atom做原子按位异或操作，
     // 将它与7做按位异或j运算，再将结果存入该原子对象
     value = atomic_fetch_xor(&atom, 7);
-    
+
     // 输出：value = 7, atom = 0
     printf("value = %d, atom = %d\n", value, atomic_load(&atom));
 }
@@ -730,25 +785,25 @@ static bool AtomicComputeArraySum(void)
 {
     // 获取当前所要计算的数组个数
     const int nLoops = (int)(sizeof(sArrays[0]) / sizeof(sArrays[0][0]));
-    
+
     // 获取数组sArrays总共有多少元素
     const int arrayLen = (int)(sizeof(sArrays) / sizeof(sArrays[0]));
-    
+
     // 利用原子加法来获取当前所要操作数组的索引
     const int currArrayIndex = atomic_fetch_add(&sAtomicArrayIndex, 1);
-    
+
     // 若当前索引已经达到了数组长度，则直接返回false，说明数组已经全部计算完成
     if(currArrayIndex >= arrayLen)
         return false;
-    
+
     // 对当前指派到的数组元素进行求和
     int sum = 0;
     for(int index = 0; index < nLoops; index++)
         sum += sArrays[currArrayIndex][index];
-    
+
     // 将结果进行累加
     atomic_fetch_add(&sAtomicArraySum, sum);
-    
+
     return true;
 }
 
@@ -757,7 +812,7 @@ static void* ThreadProc(void *args)
 {
     // 在用户线程中计算
     while(AtomicComputeArraySum());
-    
+
     return NULL;
 }
 
@@ -765,10 +820,10 @@ int main(int argc, const char * argv[])
 {
     // 获取数组每个元素的数组长度
     const int nElems = (int)(sizeof(sArrays[0]) / sizeof(sArrays[0][0]));
-    
+
     // 获取数组sArrays总共有多少元素
     const int arrayLen = (int)(sizeof(sArrays) / sizeof(sArrays[0]));
-    
+
     // 我们先对共享的二维数组进行初始化，
     // 为了方便验证结果，将它所有数组的所有元素初始化为1
     for(int i = 0; i < arrayLen; i++)
@@ -784,13 +839,13 @@ int main(int argc, const char * argv[])
         puts("Failed to create a thread!");
         return 0;
     }
-    
+
     // 在主线程中计算
     while(AtomicComputeArraySum());
-    
+
     // 等待线程执行完毕
     pthread_join(threadID, NULL);
-    
+
     // 输出最终结果
     const int result = atomic_load(&sAtomicArraySum);
     printf("The final result is: %d\n", result);
@@ -841,7 +896,7 @@ typedef enum memory_order {
 我们在上一章已经看到了，C11标准中所引入的大部分原子操作都有两个版本，其中一个是具有默认存储器次序的原子操作；还有一个则是显式指定存储器次序的原子操作。对于默认存储器次序的原子操作而言，其存储器次序为最严格的 **`memory_order_seq_cst`** ，它表示当前的原子操作必须满足**存储器顺序一致的**（**sequentially consistent**）。一般来说，默认的存储器次序，即 **`memory_order_seq_cst`** ，对于某些场景下可能会过于严苛，从而会影响整体性能。而对于显式指定的存储器次序，无论是处理器系统还是编译器都必须严格遵循所指定存储器次序的约束条件，所实现的存储器次序强度**不能弱于**所指定的存储器次序类型。比如：
 ```c
     volatile atomic_int atom = ATOMIC_VAR_INIT(0);
-    
+
     // 这里使用acquire次序加载atom原子对象
     int value = atomic_load_explicit(&atom, memory_order_acquire);
 ```
