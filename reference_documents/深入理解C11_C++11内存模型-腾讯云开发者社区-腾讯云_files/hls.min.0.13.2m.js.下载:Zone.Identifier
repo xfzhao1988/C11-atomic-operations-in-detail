@@ -1,0 +1,4 @@
+[ZoneTransfer]
+ZoneId=3
+ReferrerUrl=https://cloud.tencent.com/
+HostUrl=https://cloudcache.tencent-cloud.com/open/qcloud/video/tcplayer/libs/hls.min.0.13.2m.js

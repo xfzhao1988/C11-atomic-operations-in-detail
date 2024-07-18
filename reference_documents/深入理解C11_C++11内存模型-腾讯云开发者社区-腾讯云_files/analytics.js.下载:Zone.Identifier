@@ -1,0 +1,4 @@
+[ZoneTransfer]
+ZoneId=3
+ReferrerUrl=https://cloud.tencent.com/
+HostUrl=https://cloudcache.tencent-cloud.cn/open/qcloud/common/analytics.js?max_age=31536000
